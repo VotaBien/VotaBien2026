@@ -1,0 +1,95 @@
+---
+import '../styles/global.css';
+import datos from '../data/candidatos_full_raw.json';
+import { calcularPerfilRiesgo, type CandidatoRaw } from '../utils/riesgo';
+import Dashboard from '../components/Dashboard.svelte';
+import { getCollection } from 'astro:content';
+
+const investigacionesCollection = await getCollection('candidatos');
+
+const candidatosProcesados = datos.map((raw: any) => {
+    const c = raw as CandidatoRaw;
+    const info = c.data_lista_inicial;
+    const dni = info.strDocumentoIdentidad;
+
+    let riesgo = calcularPerfilRiesgo(c);
+
+    // Buscar TODAS las investigaciones para este DNI
+    const reportes = investigacionesCollection.filter(i => i.slug.startsWith(dni));
+
+    if (reportes.length > 0) {
+        reportes.forEach(rep => {
+            const data = rep.data;
+            if (data.puntos_penalidad > 0) {
+                riesgo.valor -= data.puntos_penalidad;
+                // CAMBIO CLAVE: Usamos 'unshift' en lugar de 'push'
+                // Esto inserta la alerta AL PRINCIPIO de la lista, para que salga primero en la tarjeta
+                riesgo.detalles.unshift(`🕵️ ${data.titulo || 'Investigación'} (-${data.puntos_penalidad} pts)`);
+            }
+        });
+
+        riesgo.valor = Math.max(1, riesgo.valor); 
+        
+        if (riesgo.valor < 5) {
+            riesgo.color = "bg-red-600";
+            riesgo.textoColor = "text-red-700";
+            riesgo.etiqueta = "ALTO RIESGO";
+        } else if (riesgo.valor < 8) {
+            riesgo.color = "bg-yellow-500";
+            riesgo.textoColor = "text-yellow-700";
+            riesgo.etiqueta = "RIESGO MEDIO";
+        }
+    }
+
+    let tipoEleccionNombre = "Otros";
+    if (info.idTipoEleccion === 1) tipoEleccionNombre = "Presidenciales";
+    else if (info.idTipoEleccion === 15) tipoEleccionNombre = "Diputados";
+    else if (info.idTipoEleccion === 20) tipoEleccionNombre = "Senadores";
+    else if (info.idTipoEleccion === 3) tipoEleccionNombre = "Parlamento Andino";
+
+    return {
+        idUnico: `${dni}-${info.idTipoEleccion}`, 
+        dni: info.strDocumentoIdentidad,
+        nombres: info.strNombres,
+        apellidos: `${info.strApellidoPaterno} ${info.strApellidoMaterno}`,
+        nombreCompleto: `${info.strNombres} ${info.strApellidoPaterno} ${info.strApellidoMaterno}`,
+        partido: info.strOrganizacionPolitica,
+        cargo: `${info.strCargo} N°${info.intPosicion}`,
+        tipoEleccion: tipoEleccionNombre,
+        foto: `https://mpesije.jne.gob.pe/apidocs/${info.strGuidFoto}.jpg`,
+        logo: `https://sroppublico.jne.gob.pe/Consulta/Simbolo/GetSimbolo/${info.idOrganizacionPolitica}`,
+        riesgo: riesgo
+    };
+});
+---
+
+<html lang="es">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width" />
+		<title>VotaBien 2026</title>
+	</head>
+	<body class="bg-slate-100 min-h-screen">
+		
+        <div class="bg-slate-900 text-white py-12 px-6 shadow-xl mb-8">
+            <div class="max-w-7xl mx-auto text-center">
+                <h1 class="text-4xl md:text-6xl font-black tracking-tight mb-4">
+                    VotaBien <span class="text-indigo-400">2026</span>
+                </h1>
+                <p class="text-lg text-slate-300 max-w-2xl mx-auto">
+                    Base de datos interactiva de riesgo electoral. Filtra, compara y detecta candidatos con sentencias o investigaciones antes de votar.
+                </p>
+            </div>
+        </div>
+
+        <main class="max-w-7xl mx-auto px-4 pb-20">
+            <Dashboard client:load candidatos={candidatosProcesados} />
+        </main>
+
+        <footer class="text-center text-slate-400 text-sm py-8 border-t border-slate-200">
+            Desarrollado con datos públicos del JNE - Proceso Electoral 2026
+			<br>Cori© 2026. Todos los derechos reservados. 🦟🦟🦟
+        </footer>
+	</body>
+</html>

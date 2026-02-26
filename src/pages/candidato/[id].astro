@@ -1,0 +1,538 @@
+---
+import '../../styles/global.css';
+import datos from '../../data/candidatos_full_raw.json';
+import { calcularPerfilRiesgo, type CandidatoRaw } from '../../utils/riesgo';
+import { getCollection } from 'astro:content';
+
+export async function getStaticPaths() {
+    const todasLasInvestigaciones = await getCollection('candidatos');
+    
+    return datos.map((raw: any) => {
+        const c = raw as CandidatoRaw;
+        const dni = c.data_lista_inicial.strDocumentoIdentidad;
+        
+        // 1. ID COMPUESTO (Para diferenciar candidaturas)
+        const idUnico = `${dni}-${c.data_lista_inicial.idTipoEleccion}`;
+        
+        // 2. BUSCAR TODAS LAS INVESTIGACIONES (Para sumar penalidades)
+        // Usamos filter y startsWith para encontrar archivos como "12345678-caso-1.md", "12345678-caso-2.md"
+        const reportesEncontrados = todasLasInvestigaciones.filter(i => i.slug.startsWith(dni));
+
+        return {
+            params: { id: idUnico },
+            props: { candidato: c, reportes: reportesEncontrados }
+        };
+    });
+}
+
+const { candidato, reportes } = Astro.props;
+const info = candidato.data_lista_inicial;
+const hv = candidato.data_hoja_vida;
+
+// --- PROCESAMIENTO DE CONTENIDO MANUAL MÚLTIPLE ---
+// Renderizamos todos los reportes encontrados
+const investigacionesRenderizadas = await Promise.all(
+    reportes.map(async (r) => {
+        const render = await r.render();
+        return {
+            Content: render.Content,
+            data: r.data
+        };
+    })
+);
+
+// --- CÁLCULO DE RIESGO ACUMULATIVO ---
+let riesgo = calcularPerfilRiesgo(candidato);
+
+if (investigacionesRenderizadas.length > 0) {
+    investigacionesRenderizadas.forEach((inv) => {
+        const manual = inv.data;
+        if (manual.puntos_penalidad > 0) {
+            riesgo.valor -= manual.puntos_penalidad;
+            // Guardamos el detalle con el nombre específico del caso
+            riesgo.detalles.push(`🕵️ INVESTIGACIÓN: ${manual.titulo || 'Caso detectado'} (-${manual.puntos_penalidad} pts)`);
+        }
+    });
+
+    // Validaciones finales
+    riesgo.valor = Math.max(1, riesgo.valor); // No bajar de 1
+    
+    // Recalcular etiqueta visual
+    if (riesgo.valor < 5) {
+        riesgo.color = "bg-red-600";
+        riesgo.textoColor = "text-red-700";
+        riesgo.etiqueta = "ALTO RIESGO";
+    } else if (riesgo.valor < 8) {
+        riesgo.color = "bg-yellow-500";
+        riesgo.textoColor = "text-yellow-700";
+        riesgo.etiqueta = "RIESGO MEDIO";
+    }
+}
+
+// --- HELPERS DE FORMATO ---
+const foto = `https://mpesije.jne.gob.pe/apidocs/${info.strGuidFoto}.jpg`;
+const logo = `https://sroppublico.jne.gob.pe/Consulta/Simbolo/GetSimbolo/${info.idOrganizacionPolitica}`;
+const moneda = (monto: any) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' }).format(Number(monto) || 0);
+
+const tieneIngresos = !!hv.oIngresos; 
+const anioIngresos = tieneIngresos ? hv.oIngresos.strAnioIngresos : 'No declarado';
+const totalIngresos = tieneIngresos ? ((hv.oIngresos.decRemuBrutaPublico || 0) + (hv.oIngresos.decRemuBrutaPrivado || 0) + (hv.oIngresos.decRentaIndividualPublico || 0) + (hv.oIngresos.decRentaIndividualPrivado || 0) + (hv.oIngresos.decOtroIngresoPublico || 0) + (hv.oIngresos.decOtroIngresoPrivado || 0)) : 0;
+const totalAcciones = hv.lTitularidad ? hv.lTitularidad.reduce((acc: number, curr: any) => acc + (curr.decValor || 0), 0) : 0;
+---
+
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{info.strNombres} {info.strApellidoPaterno} {info.strApellidoMaterno} - Hoja de Vida</title>
+</head>
+<body class="bg-slate-100 min-h-screen pb-20 text-slate-900 font-sans">
+
+    <nav class="bg-white border-b border-slate-300 sticky top-0 z-50 shadow-md">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+            <button onclick="history.back()" class="flex items-center gap-2 font-bold text-slate-700 hover:text-indigo-600 transition-colors bg-transparent border-none cursor-pointer">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                Regresar
+            </button>
+            <div class="text-right">
+                <p class="text-xs font-bold text-slate-500 uppercase">Expediente</p>
+                <p class="text-sm font-mono font-bold text-slate-800">{info.strCodExpedienteExt}</p>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 mt-8 space-y-8">
+        
+        <div class="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
+            <div class={`h-3 w-full ${riesgo.color}`}></div>
+            <div class="p-6 md:p-10 flex flex-col md:flex-row gap-8">
+                <div class="flex flex-col items-center gap-4 shrink-0">
+                    <div class="relative">
+                        <img src={foto} class="w-48 h-48 rounded-lg object-cover shadow-xl border-4 border-white" onerror="this.src='https://via.placeholder.com/200'" />
+                        <img src={logo} class="w-14 h-14 absolute -bottom-3 -right-3 bg-white p-1 rounded-full shadow-md border border-slate-200" />
+                    </div>
+                    <div class={`px-6 py-2 rounded-full text-base font-black text-white shadow-md flex items-center gap-2 ${riesgo.color}`}>
+                        <span>{riesgo.etiqueta}</span>
+                        <span class="bg-white/20 px-2 py-0.5 rounded text-sm">{riesgo.valor}/10</span>
+                    </div>
+                </div>
+
+                <div class="flex-grow space-y-4">
+                    <div>
+                        <h1 class="text-4xl md:text-5xl font-black text-slate-900 leading-tight tracking-tight uppercase">
+                            {info.strNombres}
+                        </h1>
+                        <h2 class="text-2xl md:text-3xl font-bold text-slate-600 uppercase">
+                            {info.strApellidoPaterno} {info.strApellidoMaterno}
+                        </h2>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-lg border border-slate-200">
+                        <div><span class="block text-xs font-bold text-slate-400 uppercase">Organización Política</span><span class="font-bold text-indigo-800 text-lg">{info.strOrganizacionPolitica}</span></div>
+                        <div><span class="block text-xs font-bold text-slate-400 uppercase">Cargo Postula</span><span class="font-bold text-slate-800 text-lg">{info.strCargo} N°{info.intPosicion}</span></div>
+                        <div><span class="block text-xs font-bold text-slate-400 uppercase">Circunscripción</span><span class="font-medium text-slate-700">{info.strUbiDepartamento || 'NACIONAL'}</span></div>
+                        <div><span class="block text-xs font-bold text-slate-400 uppercase">DNI / F. Nacimiento</span><span class="font-medium text-slate-700 font-mono">{info.strDocumentoIdentidad} — {hv.oDatosPersonales.strFechaNacimiento}</span></div>
+                    </div>
+
+                    {riesgo.detalles.length > 0 && (
+                        <div class="bg-red-50 border border-red-100 p-4 rounded-lg">
+                            <h3 class="text-red-800 font-bold text-xs uppercase mb-2 flex items-center gap-2">⚠️ Factores que reducen la confiabilidad:</h3>
+                            <ul class="grid grid-cols-1 gap-2">
+                                {riesgo.detalles.map(d => (
+                                    <li class="text-base font-semibold text-red-700 flex items-start gap-2">
+                                        <span class="mt-1.5 w-1.5 h-1.5 bg-red-600 rounded-full shrink-0"></span> {d}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+
+        {investigacionesRenderizadas.length > 0 && (
+            <div class="space-y-6">
+                <div class="flex items-center gap-3 pb-2 border-b border-slate-300">
+                    <span class="text-3xl">🕵️</span>
+                    <h2 class="text-2xl font-black text-slate-800 uppercase tracking-widest">Informes de Investigación ({investigacionesRenderizadas.length})</h2>
+                </div>
+
+                {investigacionesRenderizadas.map((inv, index) => (
+                    <div class="bg-slate-900 text-slate-100 rounded-xl p-8 shadow-xl border border-slate-700 relative overflow-hidden">
+                        <div class="absolute top-4 right-4 text-slate-700 font-black text-6xl opacity-20 pointer-events-none">#{index + 1}</div>
+                        <div class="flex flex-wrap items-center gap-3 mb-6 border-b border-slate-700 pb-4">
+                            <h3 class="text-xl font-bold text-indigo-400 uppercase">{inv.data.titulo || 'Informe sin título'}</h3>
+                            {inv.data.puntos_penalidad > 0 && (
+                                <span class="bg-red-900/50 text-red-300 text-xs font-bold px-3 py-1 rounded-full border border-red-800">
+                                    -{inv.data.puntos_penalidad} Ptos
+                                </span>
+                            )}
+                        </div>
+                        <div class="prose prose-invert prose-lg max-w-none">
+                            <inv.Content />
+                        </div>
+                        {inv.data.familiares && (
+                            <div class="mt-8 bg-slate-800 p-6 rounded-lg border border-slate-600">
+                                <h4 class="font-bold text-yellow-400 text-sm mb-4 uppercase">🔴 Vínculos Familiares en este caso</h4>
+                                <div class="grid gap-4 md:grid-cols-2">
+                                    {inv.data.familiares.map((f: any) => (
+                                        <div class="flex flex-col p-3 bg-slate-900/50 rounded border border-slate-700">
+                                            <span class="font-bold text-white">{f.nombre}</span>
+                                            <span class="text-xs text-slate-400">{f.relacion}</span>
+                                            <span class="text-sm text-indigo-300 mt-1">{f.cargo}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+        )}
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 class="text-lg font-black text-slate-800 mb-4 flex items-center gap-2 border-b-2 border-red-100 pb-2">
+                    ⚖️ Ámbito Penal
+                </h3>
+                {hv.lSentenciaPenal && hv.lSentenciaPenal.length > 0 ? (
+                    <div class="space-y-4">
+                        {hv.lSentenciaPenal.map((s: any) => (
+                            <div class="bg-red-50 p-4 rounded-lg border border-red-200">
+                                <div class="flex justify-between items-start mb-2">
+                                    <span class="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded uppercase">Exp. {s.strNumeroExpediente}</span>
+                                    <span class="text-xs text-red-800 font-mono">{s.strFechaSentenciaPenal}</span>
+                                </div>
+                                <p class="text-sm font-bold text-slate-900 uppercase mb-1">Delito: {s.strDelitoPenal}</p>
+                                <p class="text-sm text-slate-700"><span class="font-semibold">Fallo:</span> {s.strFalloPenal}</p>
+                                <p class="text-xs text-slate-500 mt-2">Órgano: {s.strOrganoJudiPenal}</p>
+                                <div class="mt-2 text-xs text-slate-600 bg-white/50 p-2 rounded">
+                                    Cumplimiento: <strong>{s.strCumpleFallo}</strong> | Modalidad: <strong>{s.strModalidad}</strong>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div class="h-32 flex items-center justify-center bg-slate-50 rounded-lg border border-dashed border-slate-300">
+                        <p class="text-slate-400 text-sm">No declara sentencias penales.</p>
+                    </div>
+                )}
+            </section>
+
+            <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 class="text-lg font-black text-slate-800 mb-4 flex items-center gap-2 border-b-2 border-orange-100 pb-2">
+                    ⚖️ Demandas (Familia / Contractual)
+                </h3>
+                {hv.lSentenciaObliga && hv.lSentenciaObliga.length > 0 ? (
+                    <div class="space-y-4">
+                        {hv.lSentenciaObliga.map((s: any) => (
+                            <div class="bg-orange-50 p-4 rounded-lg border border-orange-200">
+                                <div class="flex justify-between items-start mb-2">
+                                    <span class="bg-orange-500 text-white text-xs font-bold px-2 py-1 rounded uppercase">{s.strMateriaSentencia}</span>
+                                    <span class="text-xs text-orange-800 font-mono">Exp. {s.strExpedienteObliga}</span>
+                                </div>
+                                <p class="text-sm text-slate-700"><span class="font-semibold">Fallo:</span> {s.strFalloSentencia}</p>
+                                <p class="text-xs text-slate-500 mt-2">Órgano: {s.strOrganoJuridicialObliga}</p>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div class="h-32 flex items-center justify-center bg-slate-50 rounded-lg border border-dashed border-slate-300">
+                        <p class="text-slate-400 text-sm">No declara sentencias por obligaciones.</p>
+                    </div>
+                )}
+            </section>
+        </div>
+
+        <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 class="text-lg font-black text-slate-800 mb-6 border-b pb-2">🏛️ Vida Política</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h4 class="text-sm font-bold text-indigo-600 uppercase mb-4 flex items-center gap-2">
+                        <span class="text-lg">🗳️</span> Cargos de Elección Popular
+                    </h4>
+                    {hv.lCargoEleccion && hv.lCargoEleccion.length > 0 ? (
+                        <ul class="relative border-l-2 border-indigo-100 ml-3 space-y-6">
+                            {hv.lCargoEleccion.map((c: any) => (
+                                <li class="ml-6 relative">
+                                    <span class="absolute -left-[31px] bg-indigo-500 w-4 h-4 rounded-full border-2 border-white ring-2 ring-indigo-100"></span>
+                                    <div class="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
+                                        <p class="text-xs text-indigo-400 font-bold uppercase tracking-wider mb-1">Cargo Ocupado</p>
+                                        <p class="font-black text-slate-800 text-lg leading-tight">{c.strCargoEleccion}</p>
+                                        <div class="mt-2 pt-2 border-t border-indigo-100">
+                                            <p class="text-sm text-slate-600"><span class="font-semibold">Org:</span> {c.strOrgPolCargoElec}</p>
+                                            <p class="text-xs text-slate-500 font-mono mt-1">Periodo: {c.strAnioCargoElecDesde} — {c.strAnioCargoElecHasta}</p>
+                                        </div>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : <p class="text-sm text-slate-400 italic bg-slate-50 p-3 rounded">Sin cargos previos por voto popular.</p>}
+                </div>
+                <div>
+                    <h4 class="text-sm font-bold text-slate-600 uppercase mb-4 flex items-center gap-2">
+                        <span class="text-lg">🤝</span> Cargos Internos / Partidarios
+                    </h4>
+                    {hv.lCargoPartidario && hv.lCargoPartidario.length > 0 ? (
+                        <div class="grid gap-3">
+                            {hv.lCargoPartidario.map((c: any) => (
+                                <div class="bg-slate-50 p-3 rounded border border-slate-200 hover:border-indigo-200 transition-colors">
+                                    <p class="font-bold text-slate-700 text-sm flex items-center gap-2">
+                                        <span class="w-2 h-2 bg-slate-400 rounded-full"></span>
+                                        {c.strCargoPartidario}
+                                    </p>
+                                    <p class="text-xs text-slate-500 ml-4">{c.strOrgPolCargoPartidario}</p>
+                                    <p class="text-xs text-slate-400 ml-4 font-mono">{c.strAnioCargoPartiDesde} — {c.strAnioCargoPartiHasta}</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : <p class="text-sm text-slate-400 italic bg-slate-50 p-3 rounded">No declara cargos dirigenciales.</p>}
+                </div>
+            </div>
+            {hv.lRenunciaOP && hv.lRenunciaOP.length > 0 && (
+                <div class="mt-8 pt-6 border-t border-slate-100">
+                    <h4 class="text-sm font-bold text-orange-600 uppercase mb-4">Historial de Renuncias</h4>
+                    <div class="flex flex-wrap gap-2">
+                        {hv.lRenunciaOP.map((r: any) => (
+                            <span class="px-3 py-1 bg-orange-50 text-orange-800 text-xs rounded-full border border-orange-200 flex items-center gap-1">
+                                🚪 Renunció a <strong>{r.strOrgPolRenunciaOP}</strong> ({r.strAnioRenunciaOP})
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </section>
+
+        <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <div class="flex justify-between items-center mb-6 border-b pb-2">
+                <h3 class="text-lg font-black text-slate-800">💰 Declaración Jurada de Ingresos y Bienes</h3>
+                <span class="text-xs bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full font-bold">
+                    {tieneIngresos ? `Año Fiscal ${anioIngresos}` : 'No Declarado'}
+                </span>
+            </div>
+            {tieneIngresos ? (
+                <div class="overflow-x-auto mb-8">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-slate-50 text-slate-500 uppercase text-xs">
+                            <tr>
+                                <th class="px-4 py-3 rounded-l-lg">Concepto</th>
+                                <th class="px-4 py-3 text-right">Sector Público</th>
+                                <th class="px-4 py-3 text-right">Sector Privado</th>
+                                <th class="px-4 py-3 text-right rounded-r-lg">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr>
+                                <td class="px-4 py-3 font-medium">Remuneración Bruta</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decRemuBrutaPublico)}</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decRemuBrutaPrivado)}</td>
+                                <td class="px-4 py-3 text-right font-bold">{moneda((hv.oIngresos.decRemuBrutaPublico || 0) + (hv.oIngresos.decRemuBrutaPrivado || 0))}</td>
+                            </tr>
+                            <tr>
+                                <td class="px-4 py-3 font-medium">Renta Individual</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decRentaIndividualPublico)}</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decRentaIndividualPrivado)}</td>
+                                <td class="px-4 py-3 text-right font-bold">{moneda((hv.oIngresos.decRentaIndividualPublico || 0) + (hv.oIngresos.decRentaIndividualPrivado || 0))}</td>
+                            </tr>
+                            <tr>
+                                <td class="px-4 py-3 font-medium">Otros Ingresos</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decOtroIngresoPublico)}</td>
+                                <td class="px-4 py-3 text-right">{moneda(hv.oIngresos.decOtroIngresoPrivado)}</td>
+                                <td class="px-4 py-3 text-right font-bold">{moneda((hv.oIngresos.decOtroIngresoPublico || 0) + (hv.oIngresos.decOtroIngresoPrivado || 0))}</td>
+                            </tr>
+                            <tr class="bg-emerald-50/50">
+                                <td class="px-4 py-3 font-black text-emerald-800">TOTAL ANUAL</td>
+                                <td class="px-4 py-3 text-right text-emerald-800 font-bold" colspan="2"></td>
+                                <td class="px-4 py-3 text-right text-emerald-800 font-black text-lg">{moneda(totalIngresos)}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            ) : (
+                <div class="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-8 text-center text-slate-500 mb-8">
+                    <p>🚫 El candidato no presenta información de ingresos en el sistema.</p>
+                </div>
+            )}
+
+            {hv.lTitularidad && hv.lTitularidad.length > 0 && (
+                <div class="mb-8">
+                    <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">📈 Acciones y Participaciones en Empresas</h4>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left border border-slate-200 rounded-lg">
+                            <thead class="bg-indigo-50 text-indigo-900 uppercase text-xs">
+                                <tr>
+                                    <th class="px-4 py-2">Empresa / Entidad</th>
+                                    <th class="px-4 py-2 text-right">Cantidad</th>
+                                    <th class="px-4 py-2 text-right">Valor</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                {hv.lTitularidad.map((t: any) => (
+                                    <tr class="bg-white hover:bg-slate-50">
+                                        <td class="px-4 py-2 font-medium text-slate-800">{t.strPersonaJuridica}</td>
+                                        <td class="px-4 py-2 text-right text-slate-600">{t.decCantidad}</td>
+                                        <td class="px-4 py-2 text-right font-mono font-bold text-indigo-700">{moneda(t.decValor)}</td>
+                                    </tr>
+                                ))}
+                                <tr class="bg-indigo-50 font-bold text-indigo-900">
+                                    <td class="px-4 py-2 text-right" colspan="2">TOTAL VALORIZADO</td>
+                                    <td class="px-4 py-2 text-right">{moneda(totalAcciones)}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">🏠 Inmuebles ({hv.lBienInmueble ? hv.lBienInmueble.length : 0})</h4>
+                    {hv.lBienInmueble && hv.lBienInmueble.length > 0 ? (
+                        <div class="space-y-3 h-64 overflow-y-auto pr-2 custom-scrollbar">
+                            {hv.lBienInmueble.map((b: any) => (
+                                <div class="p-3 border border-slate-200 rounded hover:bg-slate-50 text-sm">
+                                    <div class="flex justify-between mb-1"><span class="font-bold text-slate-800">{b.strTipoBienInmueble}</span><span class="font-mono text-emerald-600 font-bold">{moneda(b.decAutovaluo)}</span></div>
+                                    <p class="text-xs text-slate-500">{b.strInmuebleDireccion}</p>
+                                    <p class="text-xs text-slate-400 mt-1">Partida: {b.strPartidaSunarp || 'No inscrita'}</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : <p class="text-sm text-slate-400 italic">Ninguno registrado.</p>}
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">🚗 Vehículos ({hv.lBienMueble ? hv.lBienMueble.length : 0})</h4>
+                    {hv.lBienMueble && hv.lBienMueble.length > 0 ? (
+                        <div class="space-y-3 h-64 overflow-y-auto pr-2 custom-scrollbar">
+                            {hv.lBienMueble.map((b: any) => (
+                                <div class="p-3 border border-slate-200 rounded hover:bg-slate-50 text-sm">
+                                    <div class="flex justify-between mb-1"><span class="font-bold text-slate-800">{b.strVehiculo}</span><span class="font-mono text-emerald-600 font-bold">{moneda(b.decValor)}</span></div>
+                                    <p class="text-xs text-slate-500">{b.strMarca} {b.strModelo}</p>
+                                    <p class="text-xs text-slate-400 mt-1">Placa: {b.strPlaca}</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : <p class="text-sm text-slate-400 italic">Ninguno registrado.</p>}
+                </div>
+            </div>
+        </section>
+
+        <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 class="text-lg font-black text-slate-800 mb-6 border-b pb-2">💼 Experiencia Laboral</h3>
+            {hv.lExperienciaLaboral && hv.lExperienciaLaboral.length > 0 ? (
+                <div class="relative border-l-2 border-slate-100 ml-3 space-y-8">
+                    {hv.lExperienciaLaboral.map((job: any) => (
+                        <div class="ml-6 relative group">
+                            <span class="absolute -left-[31px] bg-white border-2 border-indigo-500 w-4 h-4 rounded-full mt-1.5 group-hover:bg-indigo-500 transition-colors"></span>
+                            <div class="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1">
+                                <h4 class="font-bold text-slate-800 text-base">{job.strOcupacionProfesion}</h4>
+                                <span class="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 whitespace-nowrap">{job.strAnioTrabajoDesde} - {job.strAnioTrabajoHasta}</span>
+                            </div>
+                            <p class="text-sm font-medium text-slate-600 mt-1">{job.strCentroTrabajo}</p>
+                            <div class="flex items-center gap-2 mt-2 text-xs text-slate-400">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                                {job.strTrabajoDepartamento} / {job.strTrabajoProvincia} / {job.strTrabajoDistrito}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <p class="text-sm text-slate-400 italic bg-slate-50 p-4 rounded border border-dashed border-slate-200">No registra información de experiencia laboral.</p>
+            )}
+        </section>
+
+        <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 class="text-lg font-black text-slate-800 mb-6 border-b pb-2">🎓 Historial Académico</h3>
+            <div class="space-y-8">
+                {(hv.lEduPosgrado?.length > 0 || hv.lEduPosgradoOtro?.length > 0) && (
+                    <div>
+                        <h4 class="text-xs font-bold text-indigo-500 uppercase mb-3">Posgrado</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {hv.lEduPosgrado?.map((p: any) => (
+                                <div class="p-3 bg-indigo-50/50 border border-indigo-100 rounded">
+                                    <p class="font-bold text-indigo-900">{p.strEspecialidadPosgrado}</p>
+                                    <p class="text-sm text-slate-600">{p.strCenEstudioPosgrado}</p>
+                                    <div class="mt-2 flex gap-2">
+                                        {p.strEsMaestro === '1' && <span class="px-2 py-0.5 bg-white border border-indigo-200 text-indigo-600 text-[10px] uppercase font-bold rounded">Maestro</span>}
+                                        {p.strEsDoctor === '1' && <span class="px-2 py-0.5 bg-white border border-indigo-200 text-indigo-600 text-[10px] uppercase font-bold rounded">Doctor</span>}
+                                        {p.strConcluidoPosgrado === '1' && <span class="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] uppercase font-bold rounded">Concluido</span>}
+                                    </div>
+                                </div>
+                            ))}
+                            {hv.lEduPosgradoOtro?.map((p: any) => (
+                                <div class="p-3 bg-indigo-50/50 border border-indigo-100 rounded">
+                                    <p class="font-bold text-indigo-900">{p.strEspecialidadPosgradoOtro}</p>
+                                    <p class="text-sm text-slate-600">{p.strCenEstudioPosgradoOtro}</p>
+                                    <div class="mt-2 flex gap-2">
+                                        <span class="px-2 py-0.5 bg-white border border-indigo-200 text-indigo-600 text-[10px] uppercase font-bold rounded">{p.strGrado || 'Posgrado'}</span>
+                                        <span class="px-2 py-0.5 text-slate-400 text-[10px]">{p.strAnioPosgradoOtro}</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                <div>
+                    <h4 class="text-xs font-bold text-slate-500 uppercase mb-3">Universitaria</h4>
+                    {hv.lEduUniversitaria && hv.lEduUniversitaria.length > 0 ? (
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {hv.lEduUniversitaria.map((u: any) => (
+                                <div class="p-3 border border-slate-200 rounded">
+                                    <p class="font-bold text-slate-800">{u.strCarreraUni}</p>
+                                    <p class="text-sm text-slate-500">{u.strUniversidad}</p>
+                                    <div class="mt-2 flex gap-2">
+                                        {u.strBachillerEduUni === '1' && <span class="px-2 py-0.5 bg-blue-50 text-blue-600 text-[10px] uppercase font-bold rounded">Bachiller</span>}
+                                        {u.strTituloUni === '1' && <span class="px-2 py-0.5 bg-green-50 text-green-600 text-[10px] uppercase font-bold rounded">Titulado</span>}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : <p class="text-sm text-slate-400 italic">No registra.</p>}
+                </div>
+                {hv.lEduTecnico && hv.lEduTecnico.length > 0 && (
+                    <div>
+                        <h4 class="text-xs font-bold text-slate-500 uppercase mb-3">Técnica</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {hv.lEduTecnico.map((t: any) => (
+                                <div class="p-3 border border-slate-200 rounded">
+                                    <p class="font-bold text-slate-800">{t.strCarreraTecnico}</p>
+                                    <p class="text-sm text-slate-500">{t.strCenEstudioTecnico}</p>
+                                    {t.strConcluidoEduTecnico === '1' && <span class="mt-1 inline-block px-2 py-0.5 bg-green-50 text-green-600 text-[10px] uppercase font-bold rounded">Concluido</span>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </section>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {hv.lInfoAdicional && hv.lInfoAdicional.length > 0 && (
+                <section class="bg-yellow-50 p-6 rounded-xl border border-yellow-200">
+                    <h3 class="font-bold text-yellow-800 mb-4 uppercase text-sm">📝 Información Adicional</h3>
+                    <ul class="space-y-2">
+                        {hv.lInfoAdicional.map((i: any) => (
+                            <li class="text-sm text-yellow-900 bg-white/60 p-3 rounded border border-yellow-100">{i.strInfoAdicional}</li>
+                        ))}
+                    </ul>
+                </section>
+            )}
+            {hv.lAnotacionMarginal && hv.lAnotacionMarginal.length > 0 && (
+                <section class="bg-blue-50 p-6 rounded-xl border border-blue-200">
+                    <h3 class="font-bold text-blue-800 mb-4 uppercase text-sm">⚖️ Anotaciones Marginales</h3>
+                    <ul class="space-y-2">
+                        {hv.lAnotacionMarginal.map((a: any) => (
+                            <li class="text-sm text-blue-900 bg-white/60 p-3 rounded border border-blue-100">{a.strDice} <br/> <span class="font-bold">Debe decir:</span> {a.strDebeDecir}</li>
+                        ))}
+                    </ul>
+                </section>
+            )}
+        </div>
+
+        <details class="bg-slate-200 p-4 rounded-lg mt-12">
+            <summary class="font-mono text-xs text-slate-600 cursor-pointer font-bold uppercase">Ver Data Técnica JSON (Raw)</summary>
+            <pre class="mt-4 text-[10px] bg-slate-900 text-green-400 p-4 rounded overflow-auto max-h-96">{JSON.stringify(candidato, null, 2)}</pre>
+        </details>
+
+    </main>
+</body>
+</html>

@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Opcional: Un fondo sutil para que no sea blanco puro */
+body {
+  @apply bg-slate-50 text-slate-800;
+}
